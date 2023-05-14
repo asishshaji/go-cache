@@ -16,13 +16,15 @@ type ServerOpts struct {
 
 type Server struct {
 	ServerOpts
-	cache cache.Cacher
+	followers map[net.Conn]struct{}
+	cache     cache.Cacher
 }
 
 func NewServer(opts ServerOpts, c cache.Cacher) *Server {
 	return &Server{
 		ServerOpts: opts,
 		cache:      c,
+		followers:  make(map[net.Conn]struct{}),
 	}
 }
 
@@ -33,6 +35,19 @@ func (s *Server) Start() error {
 	}
 
 	log.Printf("server starting on port [%s]\n", s.ListenAddr)
+
+	if !s.IsLeader {
+		go func() {
+			conn, err := net.Dial("tcp", s.LeaderAddr)
+			log.Println("connected with leader", s.LeaderAddr)
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			s.handleConn(conn)
+		}()
+
+	}
 
 	for {
 		conn, err := ln.Accept()
@@ -51,6 +66,10 @@ func (s *Server) handleConn(conn net.Conn) {
 	}()
 
 	buf := make([]byte, 2048)
+
+	if s.IsLeader {
+		s.followers[conn] = struct{}{}
+	}
 
 	for {
 		n, err := conn.Read(buf)
@@ -105,5 +124,11 @@ func (s *Server) handleSetCmd(conn net.Conn, msg *Message) error {
 }
 
 func (s *Server) sendToFollowers(ctx context.Context, msg *Message) error {
+	for conn := range s.followers {
+		_, err := conn.Write(msg.ToBytes())
+		if err != nil {
+			continue
+		}
+	}
 	return nil
 }
